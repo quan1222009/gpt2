@@ -1,206 +1,137 @@
 import express from "express";
-import fs from "fs";
-import path from "path";
+import { createClient } from "redis";
 
 const app = express();
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
-/* ================== CONFIG ================== */
-const PORT = process.env.PORT || 3000;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""; // nhập trên Render
+/* ================= REDIS ================= */
+const redis = createClient({
+  url: "redis://red-d5217qe3jp1c73f6t5s0:6379"
+});
 
-/* ================== UTILS ================== */
-function detectQuestionType(text) {
-  const lower = text.toLowerCase();
-  if (
-    lower.includes("a.") ||
-    lower.includes("b.") ||
-    lower.includes("c.") ||
-    lower.includes("d.") ||
-    lower.includes("chọn") ||
-    lower.includes("trắc nghiệm")
-  ) {
-    return "multiple_choice";
-  }
-  return "essay";
-}
+redis.connect().then(() => {
+  console.log("✅ Redis connected");
+});
 
-function buildSystemPrompt({
-  grade,
-  mode,
-  detailLevel,
-  questionType,
-}) {
-  let base = `Bạn là trợ lý học tập cho học sinh lớp ${grade} tại Việt Nam.\n`;
+/* =============== SAVE API KEY =============== */
+app.post("/api/save-key", async (req, res) => {
+  const { key } = req.body;
+  if (!key) return res.status(400).json({ error: "Missing key" });
 
-  if (questionType === "multiple_choice") {
-    base +=
-      "Đây là đề TRẮC NGHIỆM. Hãy phân tích nhanh, chọn đáp án đúng và giải thích ngắn gọn.\n";
-  } else {
-    base +=
-      "Đây là đề TỰ LUẬN. Hãy trình bày rõ ràng, logic, đúng chương trình học.\n";
+  await redis.set("GEMINI_KEY", key);
+  res.json({ ok: true });
+});
+
+/* =============== CHAT =============== */
+app.post("/api/chat", async (req, res) => {
+  const { message, mode, grade } = req.body;
+
+  const apiKey = await redis.get("GEMINI_KEY");
+  if (!apiKey) {
+    return res.json({ reply: "⚠️ Chưa nhập API key" });
   }
 
-  if (mode === "math") {
-    base +=
-      "Giải toán theo kiểu vở học sinh: ghi từng bước, có lời giải, có đáp số.\n";
-  }
+  const prompt = `
+Bạn là học sinh lớp ${grade}.
+Trình độ: ${mode}.
+Yêu cầu: trả lời giống người thật, trình bày tự nhiên.
+Câu hỏi: ${message}
+`;
 
-  if (mode === "literature") {
-    base +=
-      "Làm bài văn nghị luận đúng cấu trúc: Mở bài, Thân bài, Kết bài. Văn phong học sinh.\n";
-  }
-
-  if (detailLevel === "fast") {
-    base += "Trả lời NGẮN GỌN, tập trung kết quả.\n";
-  } else {
-    base +=
-      "Trả lời CHI TIẾT, giải thích dễ hiểu, từng bước.\n";
-  }
-
-  return base;
-}
-
-/* ================== GEMINI CALL ================== */
-async function callGemini(prompt) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }],
-          },
-        ],
-      }),
+        contents: [{ parts: [{ text: prompt }] }]
+      })
     }
   );
 
-  const data = await res.json();
-  return (
+  const data = await response.json();
+  const reply =
     data.candidates?.[0]?.content?.parts?.[0]?.text ||
-    "❌ AI không trả lời được."
-  );
-}
+    "❌ AI không phản hồi";
 
-/* ================== API CHAT ================== */
-app.post("/api/chat", async (req, res) => {
-  try {
-    const {
-      message,
-      grade = "9",
-      mode = "normal", // normal | math | literature
-      detailLevel = "detail", // fast | detail
-      imageBase64 = null,
-    } = req.body;
-
-    if (!message && !imageBase64) {
-      return res.json({ reply: "❌ Chưa có nội dung câu hỏi." });
-    }
-
-    const questionType = detectQuestionType(message || "");
-
-    const systemPrompt = buildSystemPrompt({
-      grade,
-      mode,
-      detailLevel,
-      questionType,
-    });
-
-    let finalPrompt = systemPrompt + "\nCâu hỏi:\n" + (message || "");
-
-    if (imageBase64) {
-      finalPrompt +=
-        "\n(Học sinh gửi kèm hình ảnh đề bài, hãy phân tích nội dung trong ảnh.)";
-    }
-
-    const reply = await callGemini(finalPrompt);
-
-    res.json({ reply });
-  } catch (e) {
-    res.json({ reply: "❌ Lỗi server: " + e.message });
-  }
+  res.json({ reply });
 });
 
-/* ================== ROOT ================== */
+/* =============== UI (FULL MOBILE) =============== */
 app.get("/", (req, res) => {
   res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Học Tập</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Chat</title>
 <style>
 body{margin:0;font-family:sans-serif;background:#0f172a;color:#fff}
 #chat{height:100vh;display:flex;flex-direction:column}
 #messages{flex:1;overflow:auto;padding:10px}
-.msg{margin:8px 0;padding:10px;border-radius:10px;max-width:90%}
-.user{background:#2563eb;margin-left:auto}
-.ai{background:#1e293b}
-#controls{display:flex;gap:4px;padding:8px;background:#020617}
-select,input,button{padding:8px;border-radius:6px;border:none}
-input{flex:1}
+.msg{margin:8px 0}
+.user{color:#60a5fa}
+.ai{color:#34d399}
+#bar{display:flex}
+input,select,button{font-size:16px}
+input{flex:1;padding:10px}
+button{padding:10px}
+#settings{position:fixed;top:0;right:0;background:#020617;width:100%;height:100%;display:none;padding:20px}
 </style>
 </head>
 <body>
+
 <div id="chat">
   <div id="messages"></div>
-  <div id="controls">
-    <select id="grade">
-      ${Array.from({ length: 12 }, (_, i) => `<option>${i + 1}</option>`).join("")}
-    </select>
-    <select id="mode">
-      <option value="normal">Bình thường</option>
-      <option value="math">Giải toán</option>
-      <option value="literature">Văn nghị luận</option>
-    </select>
-    <select id="detail">
-      <option value="fast">Nhanh</option>
-      <option value="detail">Chi tiết</option>
-    </select>
-  </div>
-  <div id="controls">
-    <input id="input" placeholder="Nhập đề bài..." />
+  <div id="bar">
+    <input id="msg" placeholder="Nhập đề bài..." />
     <button onclick="send()">Gửi</button>
+    <button onclick="openSet()">⋮</button>
   </div>
 </div>
 
+<div id="settings">
+  <h3>⚙️ Cài đặt</h3>
+  <input id="key" placeholder="Gemini API Key" />
+  <button onclick="saveKey()">Lưu key</button>
+  <br><br>
+  <select id="grade">
+    ${[...Array(12)].map((_,i)=>`<option>Lớp ${i+1}</option>`).join("")}
+  </select>
+  <select id="mode">
+    <option>Giỏi</option>
+    <option>Khá</option>
+    <option>Trung bình</option>
+    <option>Yếu</option>
+  </select>
+  <br><br>
+  <button onclick="closeSet()">Đóng</button>
+</div>
+
 <script>
+function add(t,c){messages.innerHTML+=\`<div class="msg \${c}">\${t}</div>\`;messages.scrollTop=99999}
+
 async function send(){
-  const input=document.getElementById("input");
-  if(!input.value)return;
-  add(input.value,"user");
-  const res=await fetch("/api/chat",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      message:input.value,
-      grade:document.getElementById("grade").value,
-      mode:document.getElementById("mode").value,
-      detailLevel:document.getElementById("detail").value
-    })
-  });
-  const data=await res.json();
-  add(data.reply,"ai");
-  input.value="";
+  const m=msg.value; if(!m)return;
+  add("Bạn: "+m,"user"); msg.value="";
+  const r=await fetch("/api/chat",{method:"POST",headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message:m,grade:grade.value,mode:mode.value})});
+  const j=await r.json(); add("AI: "+j.reply,"ai");
 }
-function add(t,c){
-  const d=document.createElement("div");
-  d.className="msg "+c;
-  d.innerText=t;
-  document.getElementById("messages").appendChild(d);
+
+async function saveKey(){
+  await fetch("/api/save-key",{method:"POST",headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({key:key.value})});
+  alert("Đã lưu key (không cần redeploy)");
 }
+
+function openSet(){settings.style.display="block"}
+function closeSet(){settings.style.display="none"}
 </script>
 </body>
 </html>
 `);
 });
 
-/* ================== START ================== */
-app.listen(PORT, () =>
-  console.log("✅ Server chạy tại port " + PORT)
-);
+/* =============== START =============== */
+app.listen(3000, () => console.log("🚀 Server running"));
