@@ -1,169 +1,149 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 
-/* ================= SERVER ================= */
-
-app.post("/api/chat", async (req, res) => {
-  const { apiKey, message, level } = req.body;
-
-  if (!apiKey) {
-    return res.json({ reply: "Chưa nhập API key." });
-  }
-
-  const style = {
-    gioi: "Trả lời như học sinh giỏi, lập luận rõ ràng, không dùng từ ngữ AI.",
-    kha: "Trả lời như học sinh khá, dễ hiểu, có thể thiếu 1-2 chi tiết nhỏ.",
-    trungbinh: "Trả lời đơn giản, đúng trọng tâm, không quá dài.",
-    yeu: "Trả lời ngắn, dễ hiểu, giống người làm bài mức cơ bản."
-  }[level || "trungbinh"];
-
-  const prompt = `
-Bạn là con người, không phải AI.
-${style}
-Viết tự nhiên như người làm bài tập.
-Không nói bạn là AI.
-Không dùng văn mẫu.
-
-Câu hỏi:
-${message}
-`;
-
-  try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }]
-        })
-      }
-    );
-
-    const data = await r.json();
-    const reply =
-      data.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Không có phản hồi.";
-
-    res.json({ reply });
-  } catch (e) {
-    res.json({ reply: "Lỗi kết nối Gemini." });
-  }
-});
-
-/* ================= WEB ================= */
-
+/* ================== GIAO DIỆN ================== */
 app.get("/", (req, res) => {
-  res.send(`<!DOCTYPE html>
+  res.send(`
+<!DOCTYPE html>
 <html lang="vi">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Chat</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Human AI</title>
 <style>
-*{box-sizing:border-box;font-family:system-ui}
-body{margin:0;background:#0f172a;color:#fff;height:100vh}
+*{box-sizing:border-box}
+body{margin:0;font-family:sans-serif;background:#0f172a;color:#fff}
 #app{display:flex;flex-direction:column;height:100vh}
-header{padding:12px 16px;background:#020617;display:flex;justify-content:space-between;align-items:center}
-header span{font-weight:600}
-header button{background:none;border:none;color:#fff;font-size:22px}
-#chat{flex:1;overflow:auto;padding:12px}
-.msg{max-width:85%;padding:10px 12px;border-radius:12px;margin-bottom:8px;white-space:pre-wrap}
+header{padding:12px;background:#020617;display:flex;justify-content:space-between;align-items:center}
+header button{background:none;border:none;color:#fff;font-size:20px}
+#chat{flex:1;overflow:auto;padding:10px}
+.msg{max-width:85%;padding:10px;border-radius:12px;margin-bottom:8px;line-height:1.4}
 .user{background:#2563eb;margin-left:auto}
-.bot{background:#1e293b}
-#inputBar{display:flex;padding:10px;background:#020617}
-#input{flex:1;padding:10px;border-radius:10px;border:none}
-#send{margin-left:8px;padding:0 16px;border:none;border-radius:10px;background:#22c55e;color:#000;font-weight:600}
-#menu{position:fixed;top:0;right:-100%;width:100%;height:100%;background:#020617;padding:20px;transition:.3s}
-#menu h3{margin-top:0}
-#menu input,#menu select{width:100%;padding:10px;margin:8px 0;border-radius:8px;border:none}
-#menu button{width:100%;padding:10px;margin-top:10px;border:none;border-radius:8px;background:#22c55e;font-weight:600}
+.ai{background:#1e293b}
+#inputBar{display:flex;padding:10px;background:#020617;gap:6px}
+textarea{flex:1;resize:none;border-radius:8px;border:none;padding:8px}
+button{border:none;border-radius:8px;padding:8px}
+#panel{position:fixed;top:0;right:-100%;width:100%;height:100%;background:#020617;padding:15px;transition:.3s}
+#panel.show{right:0}
+select,input{width:100%;margin-bottom:10px;padding:8px;border-radius:6px;border:none}
 </style>
 </head>
 <body>
 <div id="app">
 <header>
-  <span>Chat AI</span>
-  <button onclick="toggle()">⋮</button>
+<span>🤖 Human AI</span>
+<button onclick="togglePanel()">⋮</button>
 </header>
 
 <div id="chat"></div>
 
 <div id="inputBar">
-  <input id="input" placeholder="Nhập câu hỏi..." />
-  <button id="send" onclick="send()">Gửi</button>
+<button onclick="img.click()">📷</button>
+<textarea id="text" rows="1" placeholder="Nhập đề bài hoặc câu hỏi..."></textarea>
+<button onclick="send()">➤</button>
+<input type="file" id="img" accept="image/*" hidden />
 </div>
 </div>
 
-<div id="menu">
+<div id="panel">
 <h3>Cài đặt</h3>
-<input id="key" placeholder="Gemini API key" />
-<select id="level">
-<option value="gioi">Học sinh giỏi</option>
-<option value="kha">Học sinh khá</option>
-<option value="trungbinh">Học sinh trung bình</option>
-<option value="yeu">Học sinh yếu</option>
+<label>Gemini API Key</label>
+<input id="key"/>
+<label>Chọn lớp</label>
+<select id="lop">
+${Array.from({length:12},(_,i)=>`<option>${i+1}</option>`).join("")}
 </select>
-<button onclick="save()">Lưu</button>
+<button onclick="save()">💾 Lưu</button>
+<button onclick="togglePanel()">❌ Đóng</button>
 </div>
 
 <script>
-const chat = document.getElementById("chat");
-const input = document.getElementById("input");
+const chat=document.getElementById("chat");
+const text=document.getElementById("text");
+const img=document.getElementById("img");
+const key=document.getElementById("key");
+const lop=document.getElementById("lop");
 
-function toggle(){
-  const m=document.getElementById("menu");
-  m.style.right = m.style.right==="0px" ? "-100%" : "0px";
-}
+key.value=localStorage.key||"";
+lop.value=localStorage.lop||"9";
 
+function togglePanel(){panel.classList.toggle("show")}
 function save(){
-  localStorage.setItem("gemini_key", key.value);
-  localStorage.setItem("level", level.value);
-  alert("Đã lưu");
-  toggle();
+ localStorage.key=key.value;
+ localStorage.lop=lop.value;
+ alert("Đã lưu");
 }
 
-function add(text, cls){
-  const d=document.createElement("div");
-  d.className="msg "+cls;
-  d.innerText=text;
-  chat.appendChild(d);
-  chat.scrollTop=chat.scrollHeight;
+function add(role,content){
+ const d=document.createElement("div");
+ d.className="msg "+role;
+ d.textContent=content;
+ chat.appendChild(d);
+ chat.scrollTop=chat.scrollHeight;
 }
 
-async function send(){
-  const msg=input.value.trim();
-  if(!msg) return;
-  add(msg,"user");
-  input.value="";
-  add("Đang trả lời...","bot");
-
-  const r=await fetch("/api/chat",{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      apiKey:localStorage.getItem("gemini_key"),
-      level:localStorage.getItem("level"),
-      message:msg
-    })
-  });
-
-  const data=await r.json();
-  chat.lastChild.innerText=data.reply;
+async function send(data={}){
+ if(!text.value && !data.image) return;
+ add("user", text.value||"[Đã gửi ảnh]");
+ const res=await fetch("/generate",{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({
+   message:text.value,
+   image:data.image,
+   apiKey:localStorage.key,
+   lop:localStorage.lop
+  })
+ });
+ const j=await res.json();
+ add("ai",j.reply);
+ text.value="";
 }
 
-input.addEventListener("keydown",e=>{
-  if(e.key==="Enter") send();
-});
-
-key.value=localStorage.getItem("gemini_key")||"";
-level.value=localStorage.getItem("level")||"trungbinh";
+img.onchange=()=>{
+ const r=new FileReader();
+ r.onload=()=>send({image:r.result.split(",")[1]});
+ r.readAsDataURL(img.files[0]);
+};
 </script>
 </body>
-</html>`);
+</html>
+`);
+});
+
+/* ================== AI ================== */
+app.post("/generate", async (req, res) => {
+  const { message = "", image, apiKey, lop = 9 } = req.body;
+  if (!apiKey) return res.json({ reply: "❌ Chưa nhập API key Gemini" });
+
+  const prompt = `
+Bạn là học sinh Việt Nam lớp ${lop}.
+Tự nhận dạng đề là Toán/Văn.
+Nếu Toán: giải từng bước như vở học sinh, có Giải và Kết luận.
+Nếu Văn: viết đúng dạng đề, có Mở-Thân-Kết, văn học sinh.
+Không nói mình là AI.
+Đề:
+${message}
+`;
+
+  const body = {
+    contents: [{
+      parts: [
+        image ? { inline_data: { mime_type: "image/jpeg", data: image } } : null,
+        { text: prompt }
+      ].filter(Boolean)
+    }]
+  };
+
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+  );
+
+  const j = await r.json();
+  res.json({ reply: j.candidates?.[0]?.content?.parts?.[0]?.text || "❌ Lỗi AI" });
 });
 
 app.listen(process.env.PORT || 3000);
