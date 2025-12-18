@@ -1,8 +1,6 @@
 {
   "name": "human-ai-chat",
-  "version": "1.0.0",
-  "description": "Chat AI giống người làm bài tập",
-  "main": "server.js",
+  "version": "1.0.2",
   "type": "module",
   "scripts": {
     "start": "node server.js"
